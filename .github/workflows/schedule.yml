@@ -1,3 +1,4 @@
+
 name: Send Sarafi Rates to Telegram
 
 on:
@@ -32,4 +33,5 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          CHANNEL_LINK: ${{ secrets.CHANNEL_LINK }}
         run: python scraper.py
