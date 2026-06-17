@@ -103,13 +103,13 @@ def fetch_url(url: str):
     }
 
     try:
-        r = requests.get(url, headers=headers, timeout=30)
-        print(f"Fetch {url} => {r.status_code}")
+        response = requests.get(url, headers=headers, timeout=30)
+        print(f"Fetch {url} => {response.status_code}")
 
-        if r.status_code != 200:
+        if response.status_code != 200:
             return None
 
-        return r.text
+        return response.text
 
     except Exception as e:
         print(f"WARNING: Failed to fetch {url}: {e}")
@@ -129,8 +129,8 @@ def market_is_open(html: str) -> bool:
     """
     Detects whether the market page says the market is open or closed.
 
-    If status is unclear, we assume OPEN so that the scraper does not miss data
-    because of a wording/layout change.
+    If status is unclear, it assumes OPEN so the bot does not miss data
+    because of minor website text/layout changes.
     """
     soup = BeautifulSoup(html, "lxml")
     text = soup.get_text(" ", strip=True).lower()
@@ -166,9 +166,8 @@ def market_is_open(html: str) -> bool:
 
 def split_currency_name(first_cell: str):
     """
-    Splits something like:
+    Splits values like:
     USD - دالر آمریکا
-    or
     USD دالر آمریکا
 
     into:
@@ -210,14 +209,15 @@ def extract_rates_from_main_table(html: str):
     """
     Extracts rates from the main HTML table.
 
-    Expected columns may include:
-    currency/name, buy, sell, time, change, status, region
+    The table may contain columns like:
+    currency/name, buy, sell, time, percentage, status, region
 
-    The site is RTL, so depending on the HTML structure, visible order can be confusing.
+    Since the site is RTL, the visual order and HTML order can be different.
     This parser tries to be flexible:
-    - finds numeric buy/sell cells
-    - stores the first text as currency name
-    - stores possible region from the last non-empty text cell
+    - finds numeric cells
+    - chooses buy/sell
+    - detects currency name
+    - detects region when available
     """
     soup = BeautifulSoup(html, "lxml")
 
@@ -241,12 +241,12 @@ def extract_rates_from_main_table(html: str):
         if len(cols) < 3:
             continue
 
-        # Skip header rows
         joined = " ".join(cols)
+
+        # Skip header rows
         if "خرید" in joined and "فروش" in joined:
             continue
 
-        # Find all number-like cells
         numeric_indexes = [
             i for i, c in enumerate(cols)
             if is_number_like(c)
@@ -255,41 +255,35 @@ def extract_rates_from_main_table(html: str):
         if len(numeric_indexes) < 2:
             continue
 
-        # Usually buy and sell are the first two numeric cells after currency name
         buy_idx = numeric_indexes[0]
         sell_idx = numeric_indexes[1]
 
         buy = cols[buy_idx]
         sell = cols[sell_idx]
 
-        # Currency name is usually before buy/sell or one of edge cells in RTL layouts.
-        # First try the cell before buy.
         first = ""
 
         if buy_idx > 0:
             first = cols[buy_idx - 1]
 
-        # If that does not look like a currency/name, try first or last cells.
         if not first or is_number_like(first):
             first = cols[0]
 
-        # In some RTL tables, currency name can be the last column.
-        if (
-            "دالر" not in first
-            and "دلار" not in first
-            and "درهم" not in first
-            and "یورو" not in first
-            and "پوند" not in first
-            and len(cols) >= 1
-        ):
+        # In some RTL tables, currency name can be at the last side of row
+        currency_keywords = [
+            "دالر",
+            "دلار",
+            "درهم",
+            "یورو",
+            "پوند",
+            "ریال",
+            "کلدار",
+            "تومان",
+        ]
+
+        if not any(k in first for k in currency_keywords) and len(cols) >= 1:
             possible_last = cols[-1]
-            if (
-                "دالر" in possible_last
-                or "دلار" in possible_last
-                or "درهم" in possible_last
-                or "یورو" in possible_last
-                or "پوند" in possible_last
-            ):
+            if any(k in possible_last for k in currency_keywords):
                 first = possible_last
 
         code, name = split_currency_name(first)
@@ -297,10 +291,7 @@ def extract_rates_from_main_table(html: str):
         if not name:
             continue
 
-        # Region is often the far-left visible column, and in HTML it is often
-        # one of the edge cells. We try to detect it by known words.
         region = ""
-
         known_regions = ["مارکیت خراسان", "خراسان", "تهران", "دوبی", "دبی"]
 
         for c in cols:
@@ -323,7 +314,7 @@ def extract_rates_from_main_table(html: str):
 
 def extract_rates_from_text(html: str):
     """
-    Fallback parser if the table parser fails.
+    Fallback parser if table parsing fails.
     """
     soup = BeautifulSoup(html, "lxml")
 
@@ -344,13 +335,13 @@ def extract_rates_from_text(html: str):
         left = clean_text(parts[0])
         sell = clean_text(parts[1])
 
-        m = re.match(r"^(.*?)\s+([0-9]+(?:[.,][0-9]+)?)$", left)
+        match = re.match(r"^(.*?)\s+([0-9]+(?:[.,][0-9]+)?)$", left)
 
-        if not m:
+        if not match:
             continue
 
-        name = clean_text(m.group(1))
-        buy = clean_text(m.group(2))
+        name = clean_text(match.group(1))
+        buy = clean_text(match.group(2))
 
         if not is_number_like(buy) or not is_number_like(sell):
             continue
@@ -383,7 +374,7 @@ def refine_khorasan_rates(rates):
     """
     Improves Khorasan labels.
 
-    If the scraper captures the region column, it uses the real region:
+    If the scraper captures the region column, it uses real region:
     - مارکیت خراسان
     - تهران
     - دوبی
@@ -414,7 +405,7 @@ def refine_khorasan_rates(rates):
                 elif dollar_count == 2:
                     item["name"] = "دالر آمریکا در مقابل تومان (تهران)"
                 else:
-                    item["name"] = f"دالر آمریکا در مقابل تومان"
+                    item["name"] = "دالر آمریکا در مقابل تومان"
 
         elif is_dirham:
             dirham_count += 1
@@ -464,11 +455,11 @@ def build_message(title, rates, source_name, source_url, channel_link, icon):
     lines.append("")
     lines.append("━━━━━━━━━━━━━━")
 
-    for r in rates:
+    for rate in rates:
         lines.append("")
-        lines.append(format_currency_title(r))
-        lines.append(f"🟢 خرید: <b>{safe(r['buy'])}</b>")
-        lines.append(f"🔴 فروش: <b>{safe(r['sell'])}</b>")
+        lines.append(format_currency_title(rate))
+        lines.append(f"🟢 خرید: <b>{safe(rate['buy'])}</b>")
+        lines.append(f"🔴 فروش: <b>{safe(rate['sell'])}</b>")
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━")
@@ -497,17 +488,53 @@ def send_telegram_message(bot_token, chat_id, text):
         "disable_web_page_preview": True,
     }
 
-    r = requests.post(url, data=payload, timeout=30)
+    response = requests.post(url, data=payload, timeout=30)
 
-    print("Telegram:", r.status_code)
+    print(f"Telegram to {chat_id}: {response.status_code}")
 
-    r.raise_for_status()
+    response.raise_for_status()
+
+
+def get_chat_ids():
+    """
+    Supports multiple channels with one bot.
+
+    Use GitHub secret CHAT_IDS like:
+    @channel_one,@channel_two
+
+    Or:
+    -1001234567890,-1009876543210
+
+    For backward compatibility, it also supports old CHAT_ID.
+    """
+    chat_ids_raw = os.getenv("CHAT_IDS", "").strip()
+
+    if not chat_ids_raw:
+        chat_ids_raw = os.getenv("CHAT_ID", "").strip()
+
+    if not chat_ids_raw:
+        print("ERROR: Missing CHAT_IDS or CHAT_ID environment variable")
+        sys.exit(1)
+
+    chat_ids = [
+        item.strip()
+        for item in chat_ids_raw.split(",")
+        if item.strip()
+    ]
+
+    if not chat_ids:
+        print("ERROR: No valid chat IDs found")
+        sys.exit(1)
+
+    return chat_ids
 
 
 def main():
     bot_token = get_env("BOT_TOKEN")
-    chat_id = get_env("CHAT_ID")
+    chat_ids = get_chat_ids()
     channel_link = get_env("CHANNEL_LINK", required=False)
+
+    print("Target channels:", ", ".join(chat_ids))
 
     messages = []
 
@@ -594,10 +621,20 @@ def main():
         print("All markets closed — nothing to send")
         return
 
-    for message in messages:
-        send_telegram_message(bot_token, chat_id, message)
+    failed_sends = 0
+
+    for chat_id in chat_ids:
+        for message in messages:
+            try:
+                send_telegram_message(bot_token, chat_id, message)
+            except Exception as e:
+                failed_sends += 1
+                print(f"WARNING: Failed to send message to {chat_id}: {e}")
 
     print("Done")
+
+    if failed_sends:
+        print(f"Completed with {failed_sends} Telegram send failure(s)")
 
 
 if __name__ == "__main__":
