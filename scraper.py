@@ -73,7 +73,7 @@ def currency_flag(code: str) -> str:
 def name_flag(name: str) -> str:
     name = str(name)
 
-    if "دالر" in name:
+    if "دالر" in name or "دلار" in name:
         return "🇺🇸"
     if "یورو" in name:
         return "🇪🇺"
@@ -87,7 +87,7 @@ def name_flag(name: str) -> str:
         return "🇮🇳"
     if "سعودی" in name:
         return "🇸🇦"
-    if "درهم" in name:
+    if "درهم" in name or "امارات" in name:
         return "🇦🇪"
 
     return "💵"
@@ -112,7 +112,7 @@ def fetch_url(url: str):
         return r.text
 
     except Exception as e:
-        print(f"WARNING: {e}")
+        print(f"WARNING: Failed to fetch {url}: {e}")
         return None
 
 
@@ -121,35 +121,42 @@ def fetch_first_working_url(urls):
         html = fetch_url(url)
         if html:
             return url, html
+
     return None, None
 
 
 def market_is_open(html: str) -> bool:
-    soup = BeautifulSoup(html, "lxml")
+    """
+    Detects whether the market page says the market is open or closed.
 
+    If status is unclear, we assume OPEN so that the scraper does not miss data
+    because of a wording/layout change.
+    """
+    soup = BeautifulSoup(html, "lxml")
     text = soup.get_text(" ", strip=True).lower()
 
     closed_words = [
         "مارکیت بسته",
         "بازار بسته",
         "تعطیل",
-        "بسته",
+        "بسته است",
         "closed",
     ]
 
     open_words = [
         "مارکیت باز",
         "بازار باز",
+        "باز است",
         "open",
     ]
 
-    for w in closed_words:
-        if w in text:
+    for word in closed_words:
+        if word in text:
             print("Market detected as CLOSED")
             return False
 
-    for w in open_words:
-        if w in text:
+    for word in open_words:
+        if word in text:
             print("Market detected as OPEN")
             return True
 
@@ -158,10 +165,17 @@ def market_is_open(html: str) -> bool:
 
 
 def split_currency_name(first_cell: str):
-    first_cell = clean_text(first_cell)
+    """
+    Splits something like:
+    USD - دالر آمریکا
+    or
+    USD دالر آمریکا
 
-    code = ""
-    name = first_cell
+    into:
+    code = USD
+    name = دالر آمریکا
+    """
+    first_cell = clean_text(first_cell)
 
     if " - " in first_cell:
         left, right = first_cell.split(" - ", 1)
@@ -171,11 +185,40 @@ def split_currency_name(first_cell: str):
     if match:
         return clean_text(match.group(1)), clean_text(match.group(2))
 
-    return code, name
+    return "", first_cell
+
+
+def normalize_region(region: str) -> str:
+    region = clean_text(region)
+
+    replacements = {
+        "مارکیت خراسان": "مارکیت خراسان",
+        "خراسان": "مارکیت خراسان",
+        "تهران": "تهران",
+        "دوبی": "دوبی",
+        "دبی": "دوبی",
+    }
+
+    for key, value in replacements.items():
+        if key in region:
+            return value
+
+    return region
 
 
 def extract_rates_from_main_table(html: str):
+    """
+    Extracts rates from the main HTML table.
 
+    Expected columns may include:
+    currency/name, buy, sell, time, change, status, region
+
+    The site is RTL, so depending on the HTML structure, visible order can be confusing.
+    This parser tries to be flexible:
+    - finds numeric buy/sell cells
+    - stores the first text as currency name
+    - stores possible region from the last non-empty text cell
+    """
     soup = BeautifulSoup(html, "lxml")
 
     table = soup.find("table")
@@ -185,30 +228,85 @@ def extract_rates_from_main_table(html: str):
         return []
 
     rates = []
-
     rows = table.find_all("tr")
 
     for row in rows:
-
         cols = [
             clean_text(c.get_text(" ", strip=True))
             for c in row.find_all(["td", "th"])
         ]
 
+        cols = [c for c in cols if c]
+
         if len(cols) < 3:
             continue
 
-        first = cols[0]
-        buy = cols[1]
-        sell = cols[2]
-
-        if not is_number_like(buy) or not is_number_like(sell):
+        # Skip header rows
+        joined = " ".join(cols)
+        if "خرید" in joined and "فروش" in joined:
             continue
+
+        # Find all number-like cells
+        numeric_indexes = [
+            i for i, c in enumerate(cols)
+            if is_number_like(c)
+        ]
+
+        if len(numeric_indexes) < 2:
+            continue
+
+        # Usually buy and sell are the first two numeric cells after currency name
+        buy_idx = numeric_indexes[0]
+        sell_idx = numeric_indexes[1]
+
+        buy = cols[buy_idx]
+        sell = cols[sell_idx]
+
+        # Currency name is usually before buy/sell or one of edge cells in RTL layouts.
+        # First try the cell before buy.
+        first = ""
+
+        if buy_idx > 0:
+            first = cols[buy_idx - 1]
+
+        # If that does not look like a currency/name, try first or last cells.
+        if not first or is_number_like(first):
+            first = cols[0]
+
+        # In some RTL tables, currency name can be the last column.
+        if (
+            "دالر" not in first
+            and "دلار" not in first
+            and "درهم" not in first
+            and "یورو" not in first
+            and "پوند" not in first
+            and len(cols) >= 1
+        ):
+            possible_last = cols[-1]
+            if (
+                "دالر" in possible_last
+                or "دلار" in possible_last
+                or "درهم" in possible_last
+                or "یورو" in possible_last
+                or "پوند" in possible_last
+            ):
+                first = possible_last
 
         code, name = split_currency_name(first)
 
         if not name:
             continue
+
+        # Region is often the far-left visible column, and in HTML it is often
+        # one of the edge cells. We try to detect it by known words.
+        region = ""
+
+        known_regions = ["مارکیت خراسان", "خراسان", "تهران", "دوبی", "دبی"]
+
+        for c in cols:
+            if any(r in c for r in known_regions):
+                region = normalize_region(c)
+                break
 
         rates.append(
             {
@@ -216,6 +314,7 @@ def extract_rates_from_main_table(html: str):
                 "name": name,
                 "buy": buy,
                 "sell": sell,
+                "region": region,
             }
         )
 
@@ -223,17 +322,17 @@ def extract_rates_from_main_table(html: str):
 
 
 def extract_rates_from_text(html: str):
-
+    """
+    Fallback parser if the table parser fails.
+    """
     soup = BeautifulSoup(html, "lxml")
 
     text = soup.get_text("\n", strip=True)
-
     lines = text.splitlines()
 
     rates = []
 
     for line in lines:
-
         if "|" not in line:
             continue
 
@@ -242,16 +341,16 @@ def extract_rates_from_text(html: str):
         if len(parts) < 2:
             continue
 
-        left = parts[0].strip()
-        sell = parts[1].strip()
+        left = clean_text(parts[0])
+        sell = clean_text(parts[1])
 
         m = re.match(r"^(.*?)\s+([0-9]+(?:[.,][0-9]+)?)$", left)
 
         if not m:
             continue
 
-        name = m.group(1)
-        buy = m.group(2)
+        name = clean_text(m.group(1))
+        buy = clean_text(m.group(2))
 
         if not is_number_like(buy) or not is_number_like(sell):
             continue
@@ -264,6 +363,7 @@ def extract_rates_from_text(html: str):
                 "name": real_name,
                 "buy": buy,
                 "sell": sell,
+                "region": "",
             }
         )
 
@@ -271,7 +371,6 @@ def extract_rates_from_text(html: str):
 
 
 def extract_rates(html: str):
-
     rates = extract_rates_from_main_table(html)
 
     if rates:
@@ -280,8 +379,58 @@ def extract_rates(html: str):
     return extract_rates_from_text(html)
 
 
-def build_channel_line(channel_link: str):
+def refine_khorasan_rates(rates):
+    """
+    Improves Khorasan labels.
 
+    If the scraper captures the region column, it uses the real region:
+    - مارکیت خراسان
+    - تهران
+    - دوبی
+
+    If region is missing, it falls back to row order:
+    1st dollar row = مارکیت خراسان
+    2nd dollar row = تهران
+    1st dirham row = دوبی
+    """
+    dollar_count = 0
+    dirham_count = 0
+
+    for item in rates:
+        name = item.get("name", "")
+        region = normalize_region(item.get("region", ""))
+
+        is_dollar = "دالر" in name or "دلار" in name
+        is_dirham = "درهم" in name or "امارات" in name
+
+        if is_dollar:
+            dollar_count += 1
+
+            if region:
+                item["name"] = f"دالر آمریکا در مقابل تومان ({region})"
+            else:
+                if dollar_count == 1:
+                    item["name"] = "دالر آمریکا در مقابل تومان (مارکیت خراسان)"
+                elif dollar_count == 2:
+                    item["name"] = "دالر آمریکا در مقابل تومان (تهران)"
+                else:
+                    item["name"] = f"دالر آمریکا در مقابل تومان"
+
+        elif is_dirham:
+            dirham_count += 1
+
+            if region:
+                item["name"] = f"درهم امارات در مقابل تومان ({region})"
+            else:
+                if dirham_count == 1:
+                    item["name"] = "درهم امارات در مقابل تومان (دوبی)"
+                else:
+                    item["name"] = "درهم امارات در مقابل تومان"
+
+    return rates
+
+
+def build_channel_line(channel_link: str):
     if not channel_link:
         return ""
 
@@ -292,7 +441,6 @@ def build_channel_line(channel_link: str):
 
 
 def format_currency_title(item):
-
     code = item.get("code", "")
     name = item.get("name", "")
 
@@ -301,12 +449,10 @@ def format_currency_title(item):
         return f"{flag} <b>{safe(code)}</b> — {safe(name)}"
 
     flag = name_flag(name)
-
     return f"{flag} <b>{safe(name)}</b>"
 
 
 def build_message(title, rates, source_name, source_url, channel_link, icon):
-
     if not rates:
         return None
 
@@ -319,7 +465,6 @@ def build_message(title, rates, source_name, source_url, channel_link, icon):
     lines.append("━━━━━━━━━━━━━━")
 
     for r in rates:
-
         lines.append("")
         lines.append(format_currency_title(r))
         lines.append(f"🟢 خرید: <b>{safe(r['buy'])}</b>")
@@ -327,9 +472,7 @@ def build_message(title, rates, source_name, source_url, channel_link, icon):
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━")
-
     lines.append(f"🕒 بروزرسانی: {safe(time)} به وقت تهران")
-
     lines.append("")
     lines.append(f"منبع: {safe(source_name)}")
 
@@ -345,7 +488,6 @@ def build_message(title, rates, source_name, source_url, channel_link, icon):
 
 
 def send_telegram_message(bot_token, chat_id, text):
-
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
     payload = {
@@ -363,14 +505,15 @@ def send_telegram_message(bot_token, chat_id, text):
 
 
 def main():
-
     bot_token = get_env("BOT_TOKEN")
     chat_id = get_env("CHAT_ID")
     channel_link = get_env("CHANNEL_LINK", required=False)
 
     messages = []
 
-    # SARAI
+    # =========================
+    # SARAI SHAHZADA
+    # =========================
     sarai_html = fetch_url(SARAI_URL)
 
     if sarai_html and market_is_open(sarai_html):
@@ -393,11 +536,14 @@ def main():
     if sarai_message:
         messages.append(sarai_message)
 
-    # KHORASAN
+    # =========================
+    # KHORASAN MARKET
+    # =========================
     kh_url, kh_html = fetch_first_working_url(KHORASAN_URL_CANDIDATES)
 
     if kh_html and market_is_open(kh_html):
         kh_rates = extract_rates(kh_html)
+        kh_rates = refine_khorasan_rates(kh_rates)
     else:
         print("Khorasan market closed")
         kh_rates = []
@@ -416,7 +562,9 @@ def main():
     if kh_message:
         messages.append(kh_message)
 
-    # DAB
+    # =========================
+    # DA AFGHANISTAN BANK
+    # =========================
     dab_html = fetch_url(DAB_URL)
 
     if dab_html and market_is_open(dab_html):
@@ -439,12 +587,15 @@ def main():
     if dab_message:
         messages.append(dab_message)
 
+    # =========================
+    # SEND TELEGRAM MESSAGES
+    # =========================
     if not messages:
         print("All markets closed — nothing to send")
         return
 
-    for m in messages:
-        send_telegram_message(bot_token, chat_id, m)
+    for message in messages:
+        send_telegram_message(bot_token, chat_id, message)
 
     print("Done")
 
