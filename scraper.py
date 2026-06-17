@@ -1,5 +1,7 @@
 import os
 import sys
+import re
+import html as html_escape
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
@@ -35,194 +37,195 @@ def fetch_page() -> str:
 
 
 def clean_text(text: str) -> str:
-    return " ".join(text.split())
+    return " ".join(text.split()).strip()
+
+
+def safe(text) -> str:
+    """
+    Escape text for Telegram HTML parse mode.
+    """
+    return html_escape.escape(str(text), quote=False)
+
+
+def currency_flag(code: str) -> str:
+    """
+    Adds flag emoji for common currency codes.
+    """
+    flags = {
+        "USD": "🇺🇸",
+        "EUR": "🇪🇺",
+        "GBP": "🇬🇧",
+        "IRR": "🇮🇷",
+        "PKR": "🇵🇰",
+        "SAR": "🇸🇦",
+        "AED": "🇦🇪",
+        "CHF": "🇨🇭",
+        "AUD": "🇦🇺",
+        "CAD": "🇨🇦",
+        "RUB": "🇷🇺",
+        "DKK": "🇩🇰",
+        "SEK": "🇸🇪",
+        "NOK": "🇳🇴",
+        "TRY": "🇹🇷",
+        "CNY": "🇨🇳",
+        "KWD": "🇰🇼",
+        "QAR": "🇶🇦",
+        "BHD": "🇧🇭",
+        "JPY": "🇯🇵",
+    }
+
+    return flags.get(code.upper(), "💵")
+
+
+def name_flag(name: str) -> str:
+    """
+    Adds flag emoji for currencies in lower market sections.
+    """
+    if "دالر آمریکا" in name:
+        return "🇺🇸"
+    if "یورو" in name:
+        return "🇪🇺"
+    if "پوند" in name:
+        return "🇬🇧"
+    if "تومان" in name or "ایران" in name:
+        return "🇮🇷"
+    if "روپیه پاکستان" in name:
+        return "🇵🇰"
+    if "روپیه هند" in name:
+        return "🇮🇳"
+
+    return "💵"
 
 
 def extract_main_rates(html: str):
     """
-    Extracts the first/main Sarai Shahzada table:
-    USD, EUR, GBP, IRR, PKR, etc.
+    Extracts all currency pairs from the main Sarai Shahzada table.
+
+    Example rows:
+    USD - دالر آمریکا | 64.30 | 64.35 | ...
+    EUR - یورو اروپا | 74.10 | 74.30 | ...
     """
     soup = BeautifulSoup(html, "lxml")
-
-    rows = []
-
-    for tr in soup.find_all("tr"):
-        cells = [clean_text(cell.get_text(" ", strip=True)) for cell in tr.find_all(["td", "th"])]
-
-        if len(cells) >= 3:
-            rows.append(cells)
-
     rates = []
 
-    for cells in rows:
-        joined = " ".join(cells)
-
-        # Skip table headers
-        if "واحد پول" in joined:
-            continue
-
-        first = cells[0]
-
-        # Main currencies look like:
-        # USD - دالر آمریکا
-        if " - " not in first:
-            continue
-
-        parts = first.split(" - ", 1)
-        code = parts[0].strip()
-        name = parts[1].strip() if len(parts) > 1 else ""
+    for tr in soup.find_all("tr"):
+        cells = [
+            clean_text(cell.get_text(" ", strip=True))
+            for cell in tr.find_all(["td", "th"])
+        ]
 
         if len(cells) < 3:
             continue
 
+        first = cells[0]
+
+        if "واحد پول" in first:
+            continue
+
+        if " - " not in first:
+            continue
+
+        code, name = first.split(" - ", 1)
         buy = cells[1]
         sell = cells[2]
 
-        if not code or not buy or not sell:
-            continue
-
-        rates.append(
-            {
-                "code": code,
-                "name": name,
-                "buy": buy,
-                "sell": sell,
-            }
-        )
+        if code and name and buy and sell:
+            rates.append(
+                {
+                    "code": code.strip(),
+                    "name": name.strip(),
+                    "buy": buy.strip(),
+                    "sell": sell.strip(),
+                }
+            )
 
     return rates
 
 
-def extract_text_lines(html: str):
+def extract_section_rates(page_text: str, section_name: str):
     """
-    Converts page text into clean lines.
-    This helps extract the lower market sections:
-    - مارکیت خراسان
-    - د افغانستان بانک
-    """
-    soup = BeautifulSoup(html, "lxml")
-    text = soup.get_text("\n", strip=True)
+    Extracts lower text sections like:
 
-    lines = []
-    for line in text.splitlines():
-        line = clean_text(line)
-        if line:
-            lines.append(line)
-
-    return lines
-
-
-def extract_named_market(lines, market_name: str):
-    """
-    Extracts lower page markets like:
     مارکیت خراسان | خرید | فروش
     دالر آمریکا 64.60 | 64.65
     یورو اروپا 74.30 | 74.50
 
-    Returns:
-    [
-      {"name": "دالر آمریکا", "buy": "64.60", "sell": "64.65"},
-      ...
-    ]
+    د افغانستان بانک | خرید | فروش
+    دالر آمریکا 64.26 | 64.46
+    ...
     """
-    rates = []
-    start_index = None
+    lines = [clean_text(line) for line in page_text.splitlines()]
+    lines = [line for line in lines if line]
 
+    header = f"{section_name} | خرید | فروش"
+
+    start = None
     for i, line in enumerate(lines):
-        if line == market_name:
-            start_index = i
+        if line == header:
+            start = i
             break
 
-    if start_index is None:
-        print(f"WARNING: Market not found: {market_name}")
-        return rates
+    if start is None:
+        print(f"WARNING: Section not found: {section_name}")
+        return []
 
-    # Data usually starts after:
-    # market name
-    # خرید
-    # فروش
-    i = start_index + 1
+    rates = []
+    i = start + 1
 
-    # Skip headers like خرید / فروش
-    while i < len(lines) and lines[i] in ["خرید", "فروش"]:
-        i += 1
-
-    # Read until another known section starts
     stop_markers = {
-        "مارکیت خراسان",
-        "د افغانستان بانک",
-        "سرای شهزاده",
+        "مارکیت خراسان | خرید | فروش",
+        "د افغانستان بانک | خرید | فروش",
+        "* سرای شهزاده",
         "افغانی",
-        "Other Currencies",
-        "مارکیت باز است",
+        "خرید",
+        "فروش",
     }
 
     while i < len(lines):
         line = lines[i]
 
-        if line in stop_markers and line != market_name:
+        if line in stop_markers and line != header:
             break
 
-        # Expected pattern from page text:
-        # دالر آمریکا 64.60
-        # 64.65
-        #
-        # Or sometimes:
+        # Expected pattern:
         # دالر آمریکا 64.60 | 64.65
         if "|" in line:
             parts = [clean_text(x) for x in line.split("|")]
-            if len(parts) >= 3:
-                name_buy = parts[0]
+
+            if len(parts) >= 2:
+                left = parts[0]
                 sell = parts[1]
 
-                name_parts = name_buy.rsplit(" ", 1)
-                if len(name_parts) == 2:
-                    name = name_parts[0]
-                    buy = name_parts[1]
-                    rates.append({"name": name, "buy": buy, "sell": sell})
+                # Split currency name and buy price from the right side
+                match = re.match(r"^(.*)\s+([0-9.,]+)$", left)
 
-        else:
-            # Handle line-based format:
-            # "دالر آمریکا 64.60"
-            # next line: "64.65"
-            if i + 1 < len(lines):
-                current = line
-                next_line = lines[i + 1]
+                if match:
+                    name = match.group(1).strip()
+                    buy = match.group(2).strip()
+                    sell = sell.strip()
 
-                # Split from right side to separate name and buy price
-                parts = current.rsplit(" ", 1)
-
-                if len(parts) == 2:
-                    name = parts[0]
-                    buy = parts[1]
-                    sell = next_line
-
-                    # Basic number check
-                    if looks_like_number(buy) and looks_like_number(sell):
-                        rates.append({"name": name, "buy": buy, "sell": sell})
-                        i += 2
-                        continue
+                    rates.append(
+                        {
+                            "name": name,
+                            "buy": buy,
+                            "sell": sell,
+                        }
+                    )
 
         i += 1
 
     return rates
 
 
-def looks_like_number(value: str) -> bool:
-    value = value.replace(",", "").replace(".", "").strip()
-    return value.isdigit()
+def build_channel_line(channel_link: str) -> str:
+    if not channel_link:
+        return ""
 
+    # If it is a Telegram link, make it clickable in HTML mode
+    if channel_link.startswith("http://") or channel_link.startswith("https://"):
+        return f'کانال: <a href="{safe(channel_link)}">{safe(channel_link)}</a>'
 
-def footer(source_name: str, channel_link: str):
-    lines = []
-    lines.append("")
-    lines.append(f"منبع: {source_name}")
-
-    if channel_link:
-        lines.append(f"کانال: {channel_link}")
-
-    return "\n".join(lines)
+    return f"کانال: {safe(channel_link)}"
 
 
 def build_main_message(rates, channel_link: str):
@@ -232,50 +235,66 @@ def build_main_message(rates, channel_link: str):
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     lines = []
-    lines.append("💱 نرخ‌های سرای شهزاده")
+    lines.append("💱 <b>نرخ اسعار سرای شهزاده</b>")
     lines.append("")
-    lines.append("واحد | خرید | فروش")
-    lines.append("------------")
+    lines.append("━━━━━━━━━━━━━━")
 
     for item in rates:
         code = item["code"]
         name = item["name"]
         buy = item["buy"]
         sell = item["sell"]
+        flag = currency_flag(code)
 
-        lines.append(f"{code} - {name}")
-        lines.append(f"خرید: {buy} | فروش: {sell}")
         lines.append("")
+        lines.append(f"{flag} <b>{safe(code)}</b> — {safe(name)}")
+        lines.append(f"🟢 خرید: <b>{safe(buy)}</b>")
+        lines.append(f"🔴 فروش: <b>{safe(sell)}</b>")
 
-    lines.append(f"🕒 بروزرسانی: {now_utc}")
-    lines.append(footer("سرای شهزاده", channel_link))
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append(f"🕒 بروزرسانی: {safe(now_utc)}")
+    lines.append("")
+    lines.append("منبع: سرای شهزاده")
+
+    channel_line = build_channel_line(channel_link)
+    if channel_line:
+        lines.append(channel_line)
 
     return "\n".join(lines)
 
 
-def build_market_message(title: str, rates, source_name: str, channel_link: str):
+def build_section_message(title: str, rates, source_name: str, channel_link: str, icon: str):
     if not rates:
         return None
 
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     lines = []
-    lines.append(f"💱 {title}")
+    lines.append(f"{icon} <b>{safe(title)}</b>")
     lines.append("")
-    lines.append("واحد | خرید | فروش")
-    lines.append("------------")
+    lines.append("━━━━━━━━━━━━━━")
 
     for item in rates:
         name = item["name"]
         buy = item["buy"]
         sell = item["sell"]
+        flag = name_flag(name)
 
-        lines.append(f"{name}")
-        lines.append(f"خرید: {buy} | فروش: {sell}")
         lines.append("")
+        lines.append(f"{flag} <b>{safe(name)}</b>")
+        lines.append(f"🟢 خرید: <b>{safe(buy)}</b>")
+        lines.append(f"🔴 فروش: <b>{safe(sell)}</b>")
 
-    lines.append(f"🕒 بروزرسانی: {now_utc}")
-    lines.append(footer(source_name, channel_link))
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append(f"🕒 بروزرسانی: {safe(now_utc)}")
+    lines.append("")
+    lines.append(f"منبع: {safe(source_name)}")
+
+    channel_line = build_channel_line(channel_link)
+    if channel_line:
+        lines.append(channel_line)
 
     return "\n".join(lines)
 
@@ -286,6 +305,7 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str):
     payload = {
         "chat_id": chat_id,
         "text": text,
+        "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
 
@@ -310,9 +330,11 @@ def main():
 
     main_rates = extract_main_rates(html)
 
-    lines = extract_text_lines(html)
-    khorasan_rates = extract_named_market(lines, "مارکیت خراسان")
-    dab_rates = extract_named_market(lines, "د افغانستان بانک")
+    soup = BeautifulSoup(html, "lxml")
+    page_text = soup.get_text("\n", strip=True)
+
+    khorasan_rates = extract_section_rates(page_text, "مارکیت خراسان")
+    dab_rates = extract_section_rates(page_text, "د افغانستان بانک")
 
     print(f"Main rates extracted: {len(main_rates)}")
     print(f"Khorasan rates extracted: {len(khorasan_rates)}")
@@ -324,20 +346,22 @@ def main():
     if main_message:
         messages.append(main_message)
 
-    khorasan_message = build_market_message(
+    khorasan_message = build_section_message(
         title="نرخ‌های مارکیت خراسان",
         rates=khorasan_rates,
         source_name="مارکیت خراسان",
         channel_link=channel_link,
+        icon="🏪",
     )
     if khorasan_message:
         messages.append(khorasan_message)
 
-    dab_message = build_market_message(
+    dab_message = build_section_message(
         title="نرخ‌های د افغانستان بانک",
         rates=dab_rates,
         source_name="د افغانستان بانک",
         channel_link=channel_link,
+        icon="🏦",
     )
     if dab_message:
         messages.append(dab_message)
@@ -348,7 +372,6 @@ def main():
 
     for index, message in enumerate(messages, start=1):
         print(f"Sending message {index}/{len(messages)}")
-        print(message[:1000])
         send_telegram_message(bot_token, chat_id, message)
 
     print("Done.")
