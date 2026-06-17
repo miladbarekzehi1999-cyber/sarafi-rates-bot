@@ -3,18 +3,15 @@ import sys
 import re
 import html as html_escape
 import requests
+import pytz
 from bs4 import BeautifulSoup
-from datetime import datetime, timezone
+from datetime import datetime
 
 
 SARAI_URL = "https://m.sarafi.af/public/fa/exchange-rates/sarai-shahzada"
 
-# You gave this URL, so we scrape Da Afghanistan Bank from here directly
 DAB_URL = "https://sarafi.af/fa/exchange-rates/da-afg-bank"
 
-# I added several possible Khorasan URLs.
-# If one is correct, the bot will use it automatically.
-# If none works, Sarai + Da Afghanistan Bank will still send.
 KHORASAN_URL_CANDIDATES = [
     "https://sarafi.af/fa/exchange-rates/khorasan-market",
     "https://sarafi.af/fa/exchange-rates/khorasan",
@@ -38,20 +35,15 @@ def clean_text(text: str) -> str:
 
 
 def safe(text) -> str:
-    """
-    Escape text for Telegram HTML parse mode.
-    """
     return html_escape.escape(str(text), quote=False)
 
 
+def get_tehran_time() -> str:
+    tehran = pytz.timezone("Asia/Tehran")
+    return datetime.now(tehran).strftime("%Y-%m-%d %H:%M")
+
+
 def is_number_like(value: str) -> bool:
-    """
-    Checks if text looks like a price/rate.
-    Examples:
-    64.30
-    1,230
-    930.50
-    """
     value = clean_text(value)
     return bool(re.fullmatch(r"[0-9]+(?:[.,][0-9]+)?", value))
 
@@ -69,14 +61,8 @@ def currency_flag(code: str) -> str:
         "AUD": "🇦🇺",
         "CAD": "🇨🇦",
         "RUB": "🇷🇺",
-        "DKK": "🇩🇰",
-        "SEK": "🇸🇪",
-        "NOK": "🇳🇴",
         "TRY": "🇹🇷",
         "CNY": "🇨🇳",
-        "KWD": "🇰🇼",
-        "QAR": "🇶🇦",
-        "BHD": "🇧🇭",
         "JPY": "🇯🇵",
         "INR": "🇮🇳",
     }
@@ -87,48 +73,22 @@ def currency_flag(code: str) -> str:
 def name_flag(name: str) -> str:
     name = str(name)
 
-    if "دالر آمریکا" in name or "دالر امريکا" in name:
+    if "دالر" in name:
         return "🇺🇸"
     if "یورو" in name:
         return "🇪🇺"
     if "پوند" in name:
         return "🇬🇧"
-    if "تومان" in name or "ایران" in name:
+    if "ایران" in name or "تومان" in name:
         return "🇮🇷"
-    if "روپیه پاکستان" in name:
+    if "پاکستان" in name:
         return "🇵🇰"
-    if "روپیه هند" in name:
+    if "هند" in name:
         return "🇮🇳"
-    if "ریال سعودی" in name:
+    if "سعودی" in name:
         return "🇸🇦"
     if "درهم" in name:
         return "🇦🇪"
-    if "فرانک" in name:
-        return "🇨🇭"
-    if "آسترالیا" in name:
-        return "🇦🇺"
-    if "کانادا" in name:
-        return "🇨🇦"
-    if "روبل" in name:
-        return "🇷🇺"
-    if "دنمارک" in name:
-        return "🇩🇰"
-    if "سویدن" in name:
-        return "🇸🇪"
-    if "ناروی" in name:
-        return "🇳🇴"
-    if "ترکیه" in name:
-        return "🇹🇷"
-    if "چین" in name:
-        return "🇨🇳"
-    if "کویت" in name:
-        return "🇰🇼"
-    if "قطر" in name:
-        return "🇶🇦"
-    if "بحرین" in name:
-        return "🇧🇭"
-    if "جاپان" in name:
-        return "🇯🇵"
 
     return "💵"
 
@@ -139,21 +99,20 @@ def fetch_url(url: str):
             "Mozilla/5.0 (X11; Linux x86_64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=30)
-        print(f"Fetch {url} => {response.status_code}")
+        r = requests.get(url, headers=headers, timeout=30)
+        print(f"Fetch {url} => {r.status_code}")
 
-        if response.status_code != 200:
+        if r.status_code != 200:
             return None
 
-        return response.text
+        return r.text
 
     except Exception as e:
-        print(f"WARNING: Failed to fetch {url}: {e}")
+        print(f"WARNING: {e}")
         return None
 
 
@@ -162,17 +121,43 @@ def fetch_first_working_url(urls):
         html = fetch_url(url)
         if html:
             return url, html
-
     return None, None
 
 
+def market_is_open(html: str) -> bool:
+    soup = BeautifulSoup(html, "lxml")
+
+    text = soup.get_text(" ", strip=True).lower()
+
+    closed_words = [
+        "مارکیت بسته",
+        "بازار بسته",
+        "تعطیل",
+        "بسته",
+        "closed",
+    ]
+
+    open_words = [
+        "مارکیت باز",
+        "بازار باز",
+        "open",
+    ]
+
+    for w in closed_words:
+        if w in text:
+            print("Market detected as CLOSED")
+            return False
+
+    for w in open_words:
+        if w in text:
+            print("Market detected as OPEN")
+            return True
+
+    print("Market status unclear — assuming OPEN")
+    return True
+
+
 def split_currency_name(first_cell: str):
-    """
-    Handles:
-    USD - دالر آمریکا
-    USD دالر آمریکا
-    دالر آمریکا
-    """
     first_cell = clean_text(first_cell)
 
     code = ""
@@ -180,52 +165,44 @@ def split_currency_name(first_cell: str):
 
     if " - " in first_cell:
         left, right = first_cell.split(" - ", 1)
-        code = clean_text(left)
-        name = clean_text(right)
-        return code, name
+        return clean_text(left), clean_text(right)
 
     match = re.match(r"^([A-Z]{3})\s+(.+)$", first_cell)
     if match:
-        code = clean_text(match.group(1))
-        name = clean_text(match.group(2))
-        return code, name
+        return clean_text(match.group(1)), clean_text(match.group(2))
 
     return code, name
 
 
-def extract_rates_from_tables(html: str):
-    """
-    Extracts rates from normal HTML tables.
+def extract_rates_from_main_table(html: str):
 
-    Supported table rows:
-    USD - دالر آمریکا | 64.30 | 64.35
-    دالر آمریکا | 64.26 | 64.46
-    USD دالر آمریکا | 64.26 | 64.46
-    """
     soup = BeautifulSoup(html, "lxml")
+
+    table = soup.find("table")
+
+    if not table:
+        print("WARNING: No table found")
+        return []
+
     rates = []
 
-    for tr in soup.find_all("tr"):
-        cells = [
-            clean_text(cell.get_text(" ", strip=True))
-            for cell in tr.find_all(["td", "th"])
+    rows = table.find_all("tr")
+
+    for row in rows:
+
+        cols = [
+            clean_text(c.get_text(" ", strip=True))
+            for c in row.find_all(["td", "th"])
         ]
 
-        cells = [cell for cell in cells if cell]
-
-        if len(cells) < 3:
+        if len(cols) < 3:
             continue
 
-        first = cells[0]
-        second = cells[1]
-        third = cells[2]
+        first = cols[0]
+        buy = cols[1]
+        sell = cols[2]
 
-        # Skip headers
-        header_words = ["واحد پول", "خرید", "فروش", "Currency", "Buy", "Sell"]
-        if any(word in first for word in header_words):
-            continue
-
-        if not is_number_like(second) or not is_number_like(third):
+        if not is_number_like(buy) or not is_number_like(sell):
             continue
 
         code, name = split_currency_name(first)
@@ -237,50 +214,46 @@ def extract_rates_from_tables(html: str):
             {
                 "code": code,
                 "name": name,
-                "buy": second,
-                "sell": third,
+                "buy": buy,
+                "sell": sell,
             }
         )
 
-    return dedupe_rates(rates)
+    return rates
 
 
 def extract_rates_from_text(html: str):
-    """
-    Fallback parser for text patterns like:
-    دالر آمریکا 64.60 | 64.65
-    یورو اروپا 74.30 | 74.50
-    """
-    soup = BeautifulSoup(html, "lxml")
-    page_text = soup.get_text("\n", strip=True)
 
-    lines = [clean_text(line) for line in page_text.splitlines()]
-    lines = [line for line in lines if line]
+    soup = BeautifulSoup(html, "lxml")
+
+    text = soup.get_text("\n", strip=True)
+
+    lines = text.splitlines()
 
     rates = []
 
     for line in lines:
+
         if "|" not in line:
             continue
 
-        parts = [clean_text(x) for x in line.split("|")]
+        parts = line.split("|")
 
         if len(parts) < 2:
             continue
 
-        left = parts[0]
-        sell = parts[1]
+        left = parts[0].strip()
+        sell = parts[1].strip()
 
-        match = re.match(r"^(.*?)\s+([0-9]+(?:[.,][0-9]+)?)$", left)
+        m = re.match(r"^(.*?)\s+([0-9]+(?:[.,][0-9]+)?)$", left)
 
-        if not match:
+        if not m:
             continue
 
-        name = clean_text(match.group(1))
-        buy = clean_text(match.group(2))
-        sell = clean_text(sell)
+        name = m.group(1)
+        buy = m.group(2)
 
-        if not name or not is_number_like(buy) or not is_number_like(sell):
+        if not is_number_like(buy) or not is_number_like(sell):
             continue
 
         code, real_name = split_currency_name(name)
@@ -294,57 +267,32 @@ def extract_rates_from_text(html: str):
             }
         )
 
-    return dedupe_rates(rates)
-
-
-def dedupe_rates(rates):
-    """
-    Remove duplicate rows.
-    """
-    seen = set()
-    result = []
-
-    for item in rates:
-        key = (
-            item.get("code", ""),
-            item.get("name", ""),
-            item.get("buy", ""),
-            item.get("sell", ""),
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        result.append(item)
-
-    return result
+    return rates
 
 
 def extract_rates(html: str):
-    """
-    First tries tables.
-    If tables fail, tries text fallback.
-    """
-    table_rates = extract_rates_from_tables(html)
 
-    if table_rates:
-        return table_rates
+    rates = extract_rates_from_main_table(html)
+
+    if rates:
+        return rates
 
     return extract_rates_from_text(html)
 
 
-def build_channel_line(channel_link: str) -> str:
+def build_channel_line(channel_link: str):
+
     if not channel_link:
         return ""
 
-    if channel_link.startswith("http://") or channel_link.startswith("https://"):
+    if channel_link.startswith("http"):
         return f'کانال: <a href="{safe(channel_link)}">{safe(channel_link)}</a>'
 
     return f"کانال: {safe(channel_link)}"
 
 
 def format_currency_title(item):
+
     code = item.get("code", "")
     name = item.get("name", "")
 
@@ -353,46 +301,51 @@ def format_currency_title(item):
         return f"{flag} <b>{safe(code)}</b> — {safe(name)}"
 
     flag = name_flag(name)
+
     return f"{flag} <b>{safe(name)}</b>"
 
 
-def build_message(title: str, rates, source_name: str, source_url: str, channel_link: str, icon: str):
+def build_message(title, rates, source_name, source_url, channel_link, icon):
+
     if not rates:
         return None
 
-    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    time = get_tehran_time()
 
     lines = []
+
     lines.append(f"{icon} <b>{safe(title)}</b>")
     lines.append("")
     lines.append("━━━━━━━━━━━━━━")
 
-    for item in rates:
-        buy = item["buy"]
-        sell = item["sell"]
+    for r in rates:
 
         lines.append("")
-        lines.append(format_currency_title(item))
-        lines.append(f"🟢 خرید: <b>{safe(buy)}</b>")
-        lines.append(f"🔴 فروش: <b>{safe(sell)}</b>")
+        lines.append(format_currency_title(r))
+        lines.append(f"🟢 خرید: <b>{safe(r['buy'])}</b>")
+        lines.append(f"🔴 فروش: <b>{safe(r['sell'])}</b>")
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━")
-    lines.append(f"🕒 بروزرسانی: {safe(now_utc)}")
+
+    lines.append(f"🕒 بروزرسانی: {safe(time)} به وقت تهران")
+
     lines.append("")
     lines.append(f"منبع: {safe(source_name)}")
 
     if source_url:
-        lines.append(f'لینک منبع: <a href="{safe(source_url)}">مشاهده</a>')
+        lines.append(f'<a href="{safe(source_url)}">مشاهده منبع</a>')
 
-    channel_line = build_channel_line(channel_link)
-    if channel_line:
-        lines.append(channel_line)
+    channel = build_channel_line(channel_link)
+
+    if channel:
+        lines.append(channel)
 
     return "\n".join(lines)
 
 
-def send_telegram_message(bot_token: str, chat_id: str, text: str):
+def send_telegram_message(bot_token, chat_id, text):
+
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
     payload = {
@@ -402,103 +355,98 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str):
         "disable_web_page_preview": True,
     }
 
-    response = requests.post(url, data=payload, timeout=30)
+    r = requests.post(url, data=payload, timeout=30)
 
-    print("Telegram status:", response.status_code)
-    print("Telegram response:", response.text)
+    print("Telegram:", r.status_code)
 
-    response.raise_for_status()
-
-    data = response.json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Telegram API error: {data}")
+    r.raise_for_status()
 
 
 def main():
+
     bot_token = get_env("BOT_TOKEN")
     chat_id = get_env("CHAT_ID")
     channel_link = get_env("CHANNEL_LINK", required=False)
 
     messages = []
 
-    # 1. Sarai Shahzada
+    # SARAI
     sarai_html = fetch_url(SARAI_URL)
 
-    if sarai_html:
+    if sarai_html and market_is_open(sarai_html):
         sarai_rates = extract_rates(sarai_html)
     else:
+        print("Sarai market closed")
         sarai_rates = []
 
-    print(f"Sarai Shahzada rates extracted: {len(sarai_rates)}")
+    print("Sarai rates:", len(sarai_rates))
 
     sarai_message = build_message(
-        title="نرخ اسعار سرای شهزاده",
-        rates=sarai_rates,
-        source_name="سرای شهزاده",
-        source_url=SARAI_URL,
-        channel_link=channel_link,
-        icon="💱",
+        "نرخ اسعار سرای شهزاده",
+        sarai_rates,
+        "سرای شهزاده",
+        SARAI_URL,
+        channel_link,
+        "💱",
     )
 
     if sarai_message:
         messages.append(sarai_message)
 
-    # 2. Khorasan Market
-    khorasan_url, khorasan_html = fetch_first_working_url(KHORASAN_URL_CANDIDATES)
+    # KHORASAN
+    kh_url, kh_html = fetch_first_working_url(KHORASAN_URL_CANDIDATES)
 
-    if khorasan_html:
-        khorasan_rates = extract_rates(khorasan_html)
+    if kh_html and market_is_open(kh_html):
+        kh_rates = extract_rates(kh_html)
     else:
-        khorasan_rates = []
+        print("Khorasan market closed")
+        kh_rates = []
 
-    print(f"Khorasan URL used: {khorasan_url}")
-    print(f"Khorasan rates extracted: {len(khorasan_rates)}")
+    print("Khorasan rates:", len(kh_rates))
 
-    khorasan_message = build_message(
-        title="نرخ‌های مارکیت خراسان",
-        rates=khorasan_rates,
-        source_name="مارکیت خراسان",
-        source_url=khorasan_url or "",
-        channel_link=channel_link,
-        icon="🏪",
+    kh_message = build_message(
+        "نرخ‌های مارکیت خراسان",
+        kh_rates,
+        "مارکیت خراسان",
+        kh_url or "",
+        channel_link,
+        "🏪",
     )
 
-    if khorasan_message:
-        messages.append(khorasan_message)
-    else:
-        print("WARNING: Khorasan message not generated. Need exact Khorasan URL if this stays 0.")
+    if kh_message:
+        messages.append(kh_message)
 
-    # 3. Da Afghanistan Bank
+    # DAB
     dab_html = fetch_url(DAB_URL)
 
-    if dab_html:
+    if dab_html and market_is_open(dab_html):
         dab_rates = extract_rates(dab_html)
     else:
+        print("DAB market closed")
         dab_rates = []
 
-    print(f"Da Afghanistan Bank rates extracted: {len(dab_rates)}")
+    print("DAB rates:", len(dab_rates))
 
     dab_message = build_message(
-        title="نرخ‌های د افغانستان بانک",
-        rates=dab_rates,
-        source_name="د افغانستان بانک",
-        source_url=DAB_URL,
-        channel_link=channel_link,
-        icon="🏦",
+        "نرخ‌های د افغانستان بانک",
+        dab_rates,
+        "د افغانستان بانک",
+        DAB_URL,
+        channel_link,
+        "🏦",
     )
 
     if dab_message:
         messages.append(dab_message)
 
     if not messages:
-        print("ERROR: No messages generated.")
-        sys.exit(1)
+        print("All markets closed — nothing to send")
+        return
 
-    for index, message in enumerate(messages, start=1):
-        print(f"Sending message {index}/{len(messages)}")
-        send_telegram_message(bot_token, chat_id, message)
+    for m in messages:
+        send_telegram_message(bot_token, chat_id, m)
 
-    print("Done.")
+    print("Done")
 
 
 if __name__ == "__main__":
