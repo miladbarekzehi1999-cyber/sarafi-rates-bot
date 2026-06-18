@@ -1,4 +1,4 @@
-name: Sarrafi Bot
+name: Send Sarafi Rates to Telegram
 
 on:
   schedule:
@@ -6,25 +6,31 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  scrape-and-send:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Show files
+        run: |
+          pwd
+          ls -la
+
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 lxml pytz
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run Sarrafi Bot
+      - name: Run scraper
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_IDS: ${{ secrets.CHAT_IDS }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
           CHANNEL_LINK: ${{ secrets.CHANNEL_LINK }}
-        run: python sarrafi_bot.py
+        run: python scraper.py
