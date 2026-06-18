@@ -1,8 +1,8 @@
-name: Currency Bot Scheduler
+name: Sarrafi Bot
 
 on:
   schedule:
-    - cron: "0 * * * *"   # run every hour
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
         run: |
           pip install requests beautifulsoup4 lxml pytz
 
-      - name: Run Currency Bot
+      - name: Run Sarrafi Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_IDS: ${{ secrets.CHAT_IDS }}
