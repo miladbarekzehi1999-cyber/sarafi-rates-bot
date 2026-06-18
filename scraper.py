@@ -464,7 +464,7 @@ def main():
         return
 
     for m in messages:
-        send_telegram_message(bot_token, chat_id, m)
+        send_telegram_message(bot_token, chat_ids, m)
 
     print("Done")
 
