@@ -362,7 +362,7 @@ def build_message(title, rates, source_name, source_url, channel_link, icon):
     return "\n".join(lines)
 
 
-def send_telegram_message(bot_token, chat_id, text):
+def send_telegram_message(bot_token, chat_ids, text):
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
@@ -383,7 +383,7 @@ def send_telegram_message(bot_token, chat_id, text):
 def main():
 
     bot_token = get_env("BOT_TOKEN")
-    chat_id = get_env("CHAT_ID")
+    chat_id = get_env("CHAT_IDS")
     channel_link = get_env("CHANNEL_LINK", required=False)
 
     messages = []
