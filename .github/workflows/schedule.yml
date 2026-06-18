@@ -1,22 +1,19 @@
-name: Send Sarafi Rates to Telegram
+name: Currency Bot Scheduler
 
 on:
   schedule:
+    # Runs every hour
     - cron: "0 * * * *"
+
   workflow_dispatch:
 
 jobs:
-  scrape-and-send:
+  run-bot:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Show files
-        run: |
-          pwd
-          ls -la
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,6 +28,7 @@ jobs:
       - name: Run scraper
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
+          CHAT_IDS: ${{ secrets.CHAT_IDS }}
           CHANNEL_LINK: ${{ secrets.CHANNEL_LINK }}
-        run: python scraper.py
+        run: |
+          python scraper.py
